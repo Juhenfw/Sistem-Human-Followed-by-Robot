@@ -1020,37 +1020,53 @@ class RobotController:
         self.ultrasonic_override_duration = 2.0  # seconds
 
     def check_ultrasonic_emergency_stop(self, ultrasonic_manager):
-        """Check for ultrasonic sensor emergency stop conditions"""
+        """Enhanced ultrasonic response dengan path planning"""
         critical_detected, sensor_name, distance = ultrasonic_manager.is_critical_obstacle_detected()
         
         if critical_detected:
             current_time = time.time()
             
-            # TAMBAHKAN: Debug info untuk memahami sensor response
-            print(f"EMERGENCY TRIGGER: {sensor_name} at {distance:.1f}cm")
+            print(f"CRITICAL OBSTACLE: {sensor_name} at {distance:.1f}cm")
             
+            # PRIORITAS 1: Cari alternatif path sebelum emergency brake
             if not self.ultrasonic_emergency_active:
-                print(f"ULTRASONIC EMERGENCY STOP! {sensor_name}: {distance:.1f}cm")
-                self.emergency_brake(brake_intensity=0.9, brake_duration=0.1)
-                self.ultrasonic_emergency_active = True
-                self.ultrasonic_override_time = current_time
-                return True
+                alternative_action = self.find_alternative_path(ultrasonic_manager)
+                
+                if alternative_action != "EMERGENCY_BRAKE":
+                    print(f"ALTERNATIVE FOUND: {alternative_action}")
+                    self.execute_alternative_action(alternative_action, ultrasonic_manager)
+                    self.ultrasonic_emergency_active = True
+                    self.ultrasonic_override_time = current_time
+                    return True
+                else:
+                    # Last resort: Emergency brake
+                    print(f"NO ALTERNATIVE - EMERGENCY BRAKE! {sensor_name}: {distance:.1f}cm")
+                    self.emergency_brake(brake_intensity=0.9, brake_duration=0.1)
+                    self.ultrasonic_emergency_active = True
+                    self.ultrasonic_override_time = current_time
+                    return True
             else:
-                # PERBAIKAN: Durasi override yang lebih pendek
-                override_duration = 1.0  # Kurangi dari 2.0 ke 1.0 detik
+                # Kurangi override duration untuk respons lebih cepat
+                override_duration = 0.5  # Kurangi dari 1.0 ke 0.5 detik
                 if current_time - self.ultrasonic_override_time > override_duration:
-                    if distance <= ULTRASONIC_CRITICAL_THRESHOLD:
+                    # Re-evaluate alternatif setelah timeout
+                    alternative_action = self.find_alternative_path(ultrasonic_manager)
+                    if alternative_action != "EMERGENCY_BRAKE":
+                        print(f"NEW ALTERNATIVE: {alternative_action}")
+                        self.execute_alternative_action(alternative_action, ultrasonic_manager)
+                        return True
+                    elif distance <= ULTRASONIC_CRITICAL_THRESHOLD:
                         print(f"STILL CRITICAL: {sensor_name}: {distance:.1f}cm")
                         return True
                     else:
-                        print("Emergency cleared - resuming")
+                        print("Path cleared - resuming")
                         self.ultrasonic_emergency_active = False
                         return False
                 else:
                     return True
         else:
             if self.ultrasonic_emergency_active:
-                print("Emergency cleared by distance")
+                print("All sensors clear - resuming normal operation")
                 self.ultrasonic_emergency_active = False
             return False
 
@@ -1143,6 +1159,169 @@ class RobotController:
         right_speed = max(-self.max_speed, min(self.max_speed, right_speed))
         
         return int(left_speed), int(right_speed)
+    
+    def find_alternative_path(self, ultrasonic_manager):
+        """Cari alternatif path berdasarkan sensor ultrasonic"""
+        status = ultrasonic_manager.get_sensor_status()
+        
+        # Evaluasi ruang bebas di setiap arah
+        path_options = self.evaluate_path_options(status)
+        
+        print("=== PATH EVALUATION ===")
+        for direction, score in path_options.items():
+            print(f"{direction}: {score['status']} (distance: {score['distance']:.1f}cm)")
+        
+        # Prioritas alternatif path
+        if path_options['left']['status'] == 'clear':
+            return "TURN_LEFT_SHARP"
+        elif path_options['right']['status'] == 'clear':
+            return "TURN_RIGHT_SHARP"
+        elif path_options['left']['status'] == 'safe' and path_options['left']['distance'] > 40:
+            return "TURN_LEFT_GENTLE"
+        elif path_options['right']['status'] == 'safe' and path_options['right']['distance'] > 40:
+            return "TURN_RIGHT_GENTLE"
+        elif self.can_reverse_safely(status):
+            return "REVERSE_AND_TURN"
+        elif path_options['left']['distance'] > path_options['right']['distance']:
+            return "FORCE_LEFT" if path_options['left']['distance'] > 20 else "EMERGENCY_BRAKE"
+        elif path_options['right']['distance'] > 15:
+            return "FORCE_RIGHT"
+        else:
+            return "EMERGENCY_BRAKE"
+
+    def evaluate_path_options(self, sensor_status):
+        """Evaluasi opsi path berdasarkan sensor data"""
+        options = {}
+        
+        # Evaluasi setiap sensor
+        for sensor_name, data in sensor_status.items():
+            distance = data.get('distance', -1)
+            level = data.get('level', 'unknown')
+            
+            if distance <= 0:
+                status = 'unknown'
+            elif level == 'clear':
+                status = 'clear'
+            elif level == 'safe':
+                status = 'safe'
+            elif level == 'warning':
+                status = 'blocked'
+            else:
+                status = 'critical'
+            
+            # Map sensor ke arah
+            if sensor_name == 'front_left':
+                options['left'] = {'status': status, 'distance': distance}
+            elif sensor_name == 'front_right':
+                options['right'] = {'status': status, 'distance': distance}
+            elif sensor_name == 'front_center':
+                options['front'] = {'status': status, 'distance': distance}
+        
+        # Default values jika sensor tidak ada
+        for direction in ['left', 'right', 'front']:
+            if direction not in options:
+                options[direction] = {'status': 'unknown', 'distance': -1}
+        
+        return options
+
+    def can_reverse_safely(self, sensor_status):
+        """Check apakah bisa mundur dengan aman"""
+        # Implementasi sederhana - bisa diperluas dengan sensor belakang
+        front_blocked = all(
+            data.get('level') in ['critical', 'warning'] 
+            for data in sensor_status.values() 
+            if data.get('distance', -1) > 0
+        )
+        
+        # Asumsi mundur aman jika semua sensor depan terblokir
+        return front_blocked
+
+    def execute_alternative_action(self, action, ultrasonic_manager):
+        """Execute alternatif action yang dipilih"""
+        if action == "TURN_LEFT_SHARP":
+            print("ALTERNATIVE: Sharp left turn")
+            self.turn_left(speed=self.rotation_speed * 1.2, smooth=True)
+            
+        elif action == "TURN_RIGHT_SHARP":
+            print("ALTERNATIVE: Sharp right turn")  
+            self.turn_right(speed=self.rotation_speed * 1.2, smooth=True)
+            
+        elif action == "TURN_LEFT_GENTLE":
+            print("ALTERNATIVE: Gentle left turn")
+            self.turn_left_forward(speed=self.gentle_turn_speed, turn_ratio=0.6, smooth=True)
+            
+        elif action == "TURN_RIGHT_GENTLE":
+            print("ALTERNATIVE: Gentle right turn")
+            self.turn_right_forward(speed=self.gentle_turn_speed, turn_ratio=0.6, smooth=True)
+            
+        elif action == "REVERSE_AND_TURN":
+            print("ALTERNATIVE: Reverse and turn around")
+            self.execute_reverse_and_turn(ultrasonic_manager)
+            
+        elif action == "FORCE_LEFT":
+            print("ALTERNATIVE: Force left (limited space)")
+            self.turn_left(speed=self.rotation_speed * 0.7, smooth=True)
+            
+        elif action == "FORCE_RIGHT":
+            print("ALTERNATIVE: Force right (limited space)")
+            self.turn_right(speed=self.rotation_speed * 0.7, smooth=True)
+            
+        else:
+            print("NO ALTERNATIVE - Emergency brake")
+            self.emergency_brake(brake_intensity=0.9, brake_duration=0.1)
+
+    def execute_reverse_and_turn(self, ultrasonic_manager):
+        """Execute mundur dan putar balik"""
+        print("EXECUTING: Reverse and turn maneuver")
+        
+        # Mundur sebentar (2 detik atau sampai ada ruang)
+        reverse_duration = 0
+        max_reverse_time = 2.0
+        
+        while reverse_duration < max_reverse_time:
+            # Mundur
+            self.move(-self.gentle_turn_speed, self.gentle_turn_speed, smooth=False)
+            time.sleep(0.1)
+            reverse_duration += 0.1
+            
+            # Check apakah sudah ada ruang untuk putar
+            status = ultrasonic_manager.get_sensor_status()
+            front_clear = any(
+                data.get('level') in ['clear', 'safe'] 
+                for data in status.values() 
+                if data.get('distance', -1) > 30
+            )
+            
+            if front_clear:
+                print(f"Space created after {reverse_duration:.1f}s reverse")
+                break
+        
+        # Stop sebentar
+        self.move(0, 0, smooth=False)
+        time.sleep(0.2)
+        
+        # Putar 180 derajat (pilih arah dengan ruang terbanyak)
+        path_options = self.evaluate_path_options(status)
+        
+        if path_options['left']['distance'] > path_options['right']['distance']:
+            print("Turning 180° LEFT after reverse")
+            turn_duration = 0
+            while turn_duration < 3.0:  # Maksimal 3 detik putar
+                self.turn_left(speed=self.rotation_speed, smooth=False)
+                time.sleep(0.1)
+                turn_duration += 0.1
+        else:
+            print("Turning 180° RIGHT after reverse")
+            turn_duration = 0
+            while turn_duration < 3.0:  # Maksimal 3 detik putar
+                self.turn_right(speed=self.rotation_speed, smooth=False)
+                time.sleep(0.1)
+                turn_duration += 0.1
+        
+        # Stop setelah putar
+        self.move(0, 0, smooth=True)
+        print("Reverse and turn maneuver completed")
+
     
     def smooth_speed_transition(self, target_left, target_right):
         """Transisi smooth ke target speed tanpa stopping"""
