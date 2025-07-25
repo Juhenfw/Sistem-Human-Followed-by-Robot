@@ -43,7 +43,7 @@ ROTATION_FACTOR = 2
 STOP_THRESHOLD = 80  # cm
 
 # Konfigurasi performa real-time
-CONTROL_FREQUENCY = 500  # Hz - increased from 200
+CONTROL_FREQUENCY = 5000  # Hz - increased from 200
 LIDAR_SKIP_FRAMES = 0    # Process every frame
 UWB_TIMEOUT = 0.0005     # 0.5ms timeout
 MAX_LOOP_TIME = 0.002    # 2ms warning threshold
@@ -1595,6 +1595,60 @@ class LidarProcessor:
                 return best_direction
 
         return "FORWARD"
+    
+    def check_immediate_collision_threat_only(self, ultrasonic_manager, lidar):
+        """Cek HANYA ancaman tabrakan immediate (< 8cm)"""
+        
+        # Ultrasonic immediate threat (< 8cm)
+        if ultrasonic_manager:
+            critical_detected, sensor_name, distance = \
+                ultrasonic_manager.is_critical_obstacle_detected()
+            
+            if critical_detected and distance < 8:  # SANGAT dekat
+                print(f"IMMEDIATE COLLISION: {sensor_name} at {distance:.1f}cm")
+                self.execute_immediate_side_step(sensor_name)
+                return True
+        
+        # LIDAR immediate threat (< 8cm)
+        if hasattr(lidar, 'scan_data') and lidar.scan_data:
+            for angle in range(350, 361):  
+                if angle in lidar.scan_data:
+                    distance = lidar.scan_data[angle]
+                    if distance < 80:  # 8cm
+                        print(f"IMMEDIATE LIDAR COLLISION: {distance}mm")
+                        self.execute_immediate_side_step_lidar(angle)
+                        return True
+        
+        return False
+    
+    def execute_immediate_side_step(self, sensor_name):
+        """Side step minimal untuk hindari tabrakan immediate"""
+        
+        if sensor_name == 'front_center':
+            # Center blocked - side step ke yang lebih lapang
+            if self.parent and self.parent.ultrasonic_manager:
+                status = self.parent.ultrasonic_manager.get_sensor_status()
+                left_space = status.get('front_left', {}).get('distance', 0)
+                right_space = status.get('front_right', {}).get('distance', 0)
+                
+                if left_space > right_space and left_space > 10:
+                    self.move(-15, 15, smooth=False)  # Side step left
+                    print("SIDE STEP LEFT")
+                elif right_space > 10:
+                    self.move(15, -15, smooth=False)  # Side step right  
+                    print("SIDE STEP RIGHT")
+                else:
+                    self.move(-10, 10, smooth=False)  # Minimal reverse
+                    print("MINIMAL REVERSE")
+            
+        elif sensor_name == 'front_left':
+            self.move(10, -10, smooth=False)  # Small right adjustment
+            print("ADJUST RIGHT")
+            
+        elif sensor_name == 'front_right':
+            self.move(-10, 10, smooth=False)  # Small left adjustment
+            print("ADJUST LEFT")
+
 
 class RobotController:
     """Enhanced robot controller with ultra-fast response and advanced path planning"""
@@ -1714,47 +1768,66 @@ class RobotController:
             print("✓ Fast response system initialized")
 
     def process_control_ultra_fast(self, uwb_distances, lidar, ultrasonic_manager=None):
-        """Ultra-fast control processing with multi-level decision making"""
+        """Ultra-fast control dengan prioritas UWB target following"""
         
         start_time = time.time()
         
-        # LEVEL 1: Immediate threat check (< 1ms target)
-        if self.check_immediate_threats_fast(ultrasonic_manager, lidar):
+        # LEVEL 1: HANYA ancaman IMMEDIATE collision (< 8cm)
+        if self.check_immediate_collision_threat_only(ultrasonic_manager, lidar):
             return
         
-        # LEVEL 2: Fast obstacle assessment (< 2ms target)
-        obstacle_situation = self.assess_obstacle_situation_fast(
-            lidar, ultrasonic_manager
-        )
+        # LEVEL 2: UWB target following SELALU jadi prioritas utama
+        target_direction, target_distance = self.uwb_tracker.estimate_target_direction(uwb_distances)
         
-        # LEVEL 3: Decision making based on situation
-        if obstacle_situation['priority'] == 'EMERGENCY':
-            self.execute_emergency_response(obstacle_situation)
-            
-        elif obstacle_situation['priority'] == 'CRITICAL':
-            # Use DWA for optimal path
-            if self.fast_response and self.fast_response.dwa:
-                left_speed, right_speed, action_type = self.fast_response.dwa.execute_optimal_path(
-                    uwb_distances, lidar, ultrasonic_manager
-                )
-                self.smooth_speed_transition(left_speed, right_speed)
-            else:
-                self.execute_critical_response(obstacle_situation, uwb_distances)
-            
-        elif obstacle_situation['priority'] == 'WARNING':
-            # Enhanced warning response with path options
-            path_options = self.generate_path_options_fast(obstacle_situation)
-            best_path = self.select_best_path_fast(path_options, uwb_distances)
-            self.execute_path_fast(best_path)
-            
-        else:  # NORMAL operation
-            # Optimized UWB following
-            self.process_uwb_control_optimized(uwb_distances, lidar, ultrasonic_manager)
+        # LEVEL 3: Cari jalur ke target dengan obstacle avoidance minimal
+        if target_distance <= self.stop_threshold:
+            self.smooth_speed_transition(0, 0)
+            return
         
-        # Performance monitoring
-        execution_time = (time.time() - start_time) * 1000  # ms
-        if execution_time > 5:  # 5ms warning threshold
-            print(f"SLOW CONTROL: {execution_time:.1f}ms")
+        # Jalankan UWB control dengan obstacle adjustment minimal
+        self.process_uwb_control_aggressive(uwb_distances, lidar, ultrasonic_manager)
+
+    def process_uwb_control_aggressive(self, uwb_distances, lidar, ultrasonic_manager):
+        """UWB control agresif dengan prioritas target following"""
+        
+        A0, A1, A2 = uwb_distances['A0'], uwb_distances['A1'], uwb_distances['A2']
+        
+        # Calculate steering
+        angle_error = A2 - A1
+        
+        # AGGRESSIVE speed - tidak terlalu pelan karena obstacle jauh
+        base_speed = self.calculate_aggressive_target_speed(A0)
+        
+        # Differential steering untuk target
+        if abs(angle_error) < 10:
+            left_speed = base_speed
+            right_speed = -base_speed
+        elif angle_error < 0:  # Target kanan
+            turn_factor = min(1.0, abs(angle_error) / 40.0)
+            left_speed = base_speed * (1.0 + turn_factor * 0.5)
+            right_speed = -base_speed * (1.0 - turn_factor * 0.7)
+        else:  # Target kiri
+            turn_factor = min(1.0, abs(angle_error) / 40.0)
+            left_speed = base_speed * (1.0 - turn_factor * 0.7)
+            right_speed = -base_speed * (1.0 + turn_factor * 0.5)
+        
+        # MINIMAL obstacle adjustment - hanya untuk yang sangat dekat
+        if ultrasonic_manager:
+            left_speed, right_speed = self.apply_minimal_obstacle_adjustment(
+                left_speed, right_speed, ultrasonic_manager
+            )
+        
+        self.smooth_speed_transition(int(left_speed), int(right_speed))
+
+    def calculate_aggressive_target_speed(self, distance_to_target):
+        """Hitung kecepatan agresif menuju target"""
+        
+        if distance_to_target < 80:
+            return 50  # Dekat target - pelan tapi tidak terlalu pelan
+        elif distance_to_target < 150:  
+            return 70  # Medium distance - speed baik
+        else:
+            return self.speed  # Jauh dari target - full speed
 
     def check_immediate_threats_fast(self, ultrasonic_manager, lidar):
         """Ultra-fast immediate threat detection"""
@@ -2554,7 +2627,7 @@ class RobotController:
         
         # Apply ultrasonic adjustments if available
         if ultrasonic_manager:
-            left_speed, right_speed = self.apply_ultrasonic_obstacle_adjustment_optimized(
+            left_speed, right_speed = self.apply_ultrasonic_obstacle_adjustment(
                 ultrasonic_manager, left_speed, right_speed
             )
         
@@ -2571,84 +2644,36 @@ class RobotController:
         
         print(f"UWB Control: {direction} | A0={A0:.1f}cm | Error={angle_error:.1f} | L={left_speed:.0f} R={right_speed:.0f}")
 
-    def apply_ultrasonic_obstacle_adjustment_optimized(self, ultrasonic_manager, base_left_speed, base_right_speed):
-        """Optimized ultrasonic obstacle adjustment with faster response"""
+    def apply_minimal_obstacle_adjustment(self, left_speed, right_speed, ultrasonic_manager):
+        """Adjustment minimal - hanya untuk obstacle yang benar-benar menghalangi"""
         
         summary = ultrasonic_manager.get_obstacle_summary()
         
-        # Critical obstacles - immediate alternative search
-        if summary['critical_detected']:
-            alternative_action = self.find_alternative_path_ultra_fast(summary)
-            
-            if alternative_action != "EMERGENCY_BRAKE":
-                print(f"ULTRASONIC ALTERNATIVE: {alternative_action}")
-                return self.execute_alternative_speeds(alternative_action, base_left_speed, base_right_speed)
-            else:
-                return 0, 0  # Stop if no alternative
-        
-        # Warning level adjustments
-        if not summary['warning_detected']:
-            return base_left_speed, base_right_speed
+        # HANYA adjust jika critical (< 15cm) DAN menghalangi jalur langsung
+        if not summary['critical_detected']:
+            return left_speed, right_speed
         
         status = summary['sensor_status']
-        adjusted_left = base_left_speed
-        adjusted_right = base_right_speed
+        center_distance = status.get('front_center', {}).get('distance', 100)
         
-        # Enhanced obstacle avoidance logic
-        if (status['front_left']['level'] == 'warning' and 
-            status['front_left']['distance'] > 0):
-            
-            # Check available space on right
-            right_space = status.get('front_right', {}).get('distance', 0)
-            
-            if right_space > 35:  # Good clearance on right
-                print(f"Left obstacle: Strong right turn (right space: {right_space:.1f}cm)")
-                adjusted_left = base_left_speed * 1.4
-                adjusted_right = base_right_speed * 0.5
-            else:
-                print(f"Left obstacle: Moderate right turn (limited right space)")
-                adjusted_left = base_left_speed * 1.2
-                adjusted_right = base_right_speed * 0.7
+        # Jika center masih aman (> 15cm), TIDAK perlu adjustment
+        if center_distance > 15:
+            return left_speed, right_speed
         
-        if (status['front_center']['level'] == 'warning' and 
-            status['front_center']['distance'] > 0):
-            
-            # Front blocked - evaluate sides
-            left_space = status.get('front_left', {}).get('distance', 0)
-            right_space = status.get('front_right', {}).get('distance', 0)
-            
-            if max(left_space, right_space) > 30:
-                print(f"Front blocked: Side space available L:{left_space:.1f} R:{right_space:.1f}")
-                
-                if left_space > right_space:
-                    # Turn left
-                    adjusted_left = base_left_speed * 0.4
-                    adjusted_right = base_right_speed * 1.3
-                else:
-                    # Turn right
-                    adjusted_left = base_left_speed * 1.3
-                    adjusted_right = base_right_speed * 0.4
-            else:
-                print("Front blocked: Limited side space - slow approach")
-                adjusted_left = base_left_speed * 0.3
-                adjusted_right = base_right_speed * 0.3
+        # Cari jalur samping yang tersedia
+        left_distance = status.get('front_left', {}).get('distance', 0)
+        right_distance = status.get('front_right', {}).get('distance', 0)
         
-        if (status['front_right']['level'] == 'warning' and 
-            status['front_right']['distance'] > 0):
-            
-            # Check available space on left
-            left_space = status.get('front_left', {}).get('distance', 0)
-            
-            if left_space > 35:  # Good clearance on left
-                print(f"Right obstacle: Strong left turn (left space: {left_space:.1f}cm)")
-                adjusted_left = base_left_speed * 0.5
-                adjusted_right = base_right_speed * 1.4
-            else:
-                print(f"Right obstacle: Moderate left turn (limited left space)")
-                adjusted_left = base_left_speed * 0.7
-                adjusted_right = base_right_speed * 1.2
-        
-        return int(adjusted_left), int(adjusted_right)
+        if left_distance > 20:  # Kiri cukup lapang
+            # Slight left turn
+            return int(left_speed * 0.7), int(right_speed * 1.3)
+        elif right_distance > 20:  # Kanan cukup lapang
+            # Slight right turn  
+            return int(left_speed * 1.3), int(right_speed * 0.7)
+        else:
+            # Kedua sisi sempit - perlambat sedikit tapi tetap maju
+            return int(left_speed * 0.6), int(right_speed * 0.6)
+
 
     def find_alternative_path_ultra_fast(self, ultrasonic_summary):
         """Ultra-fast alternative path finding for ultrasonic sensors"""
