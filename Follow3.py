@@ -32,10 +32,10 @@ DANGER_THRESHOLD = 1000  # Jarak bahaya dalam mm
 MIN_VALID_DISTANCE = 200  # Jarak minimum valid (mm) untuk menghindari noise
 CRITICAL_DANGER_THRESHOLD = 300  # Jarak kritis untuk override UWB (mm)
 
-# Ultrasonic sensor thresholds (in cm)
-ULTRASONIC_CRITICAL_THRESHOLD = 30  # 30 cm critical danger
-ULTRASONIC_WARNING_THRESHOLD = 50   # 50 cm warning
-ULTRASONIC_SAFE_THRESHOLD = 80      # 80 cm safe distance
+# Ultrasonic sensor thresholds (in cm) - DIPERBAIKI
+ULTRASONIC_CRITICAL_THRESHOLD = 25  # Turunkan dari 30 ke 25 cm
+ULTRASONIC_WARNING_THRESHOLD = 45   # Turunkan dari 50 ke 45 cm  
+ULTRASONIC_SAFE_THRESHOLD = 70      # Turunkan dari 80 ke 70 cm
 
 # Motor speed configuration
 DEFAULT_SPEED = 75
@@ -63,11 +63,11 @@ TARGET_EXCLUSION_ANGLE = 10  # Rentang pengecualian untuk target (menghindari ta
 gpio_pin_17 = LED(17)  # GPIO 17 for program start
 gpio_pin_27 = LED(27)  # GPIO 27 for error indication
 
-# Ultrasonic Sensor Configuration
+# PASTIKAN konfigurasi ini sesuai dengan pemasangan fisik sensor
 SENSORS = {
-    'front_left': {'trig': 18, 'echo': 24, 'position': 'front_left'},   # Sensor 1
-    'front_center': {'trig': 23, 'echo': 25, 'position': 'front_center'}, # Sensor 2
-    'front_right': {'trig': 12, 'echo': 16, 'position': 'front_right'}    # Sensor 3
+    'front_left': {'trig': 18, 'echo': 24, 'position': 'front_left'},     # Sensor 1 - Pojok kiri depan
+    'front_center': {'trig': 23, 'echo': 25, 'position': 'front_center'}, # Sensor 2 - Tengah depan  
+    'front_right': {'trig': 12, 'echo': 16, 'position': 'front_right'}    # Sensor 3 - Pojok kanan depan
 }
 
 # Dynamic IP function to get Raspberry Pi IP from Wi-Fi interface (default is wlan0)
@@ -307,6 +307,26 @@ class UltrasonicSensorManager:
                 if data['level'] == 'critical' and data['distance'] > 0:
                     return True, sensor_name, data['distance']
         return False, None, -1
+    
+    def test_sensor_directions(self):
+        """Test function untuk memverifikasi arah sensor"""
+        print("\n=== TESTING SENSOR DIRECTIONS ===")
+        print("Letakkan halangan di depan setiap sensor dan amati output:")
+        
+        for i in range(10):  # Test 10 kali
+            status = self.get_sensor_status()
+            
+            print(f"\nTest {i+1}:")
+            for sensor_name, data in status.items():
+                if data['distance'] > 0:
+                    print(f"  {sensor_name}: {data['distance']:.1f}cm [{data['level']}]")
+            
+            time.sleep(1)
+        
+        print("\nVerifikasi:")
+        print("- Halangan di KIRI harus trigger 'front_left'")
+        print("- Halangan di DEPAN harus trigger 'front_center'") 
+        print("- Halangan di KANAN harus trigger 'front_right'")
     
     def get_obstacle_summary(self):
         """Get summary of obstacle detection"""
@@ -1006,6 +1026,9 @@ class RobotController:
         if critical_detected:
             current_time = time.time()
             
+            # TAMBAHKAN: Debug info untuk memahami sensor response
+            print(f"EMERGENCY TRIGGER: {sensor_name} at {distance:.1f}cm")
+            
             if not self.ultrasonic_emergency_active:
                 print(f"ULTRASONIC EMERGENCY STOP! {sensor_name}: {distance:.1f}cm")
                 self.emergency_brake(brake_intensity=0.9, brake_duration=0.1)
@@ -1013,21 +1036,21 @@ class RobotController:
                 self.ultrasonic_override_time = current_time
                 return True
             else:
-                # Check if override period has passed
-                if current_time - self.ultrasonic_override_time > self.ultrasonic_override_duration:
-                    # Check if still in critical zone
+                # PERBAIKAN: Durasi override yang lebih pendek
+                override_duration = 1.0  # Kurangi dari 2.0 ke 1.0 detik
+                if current_time - self.ultrasonic_override_time > override_duration:
                     if distance <= ULTRASONIC_CRITICAL_THRESHOLD:
-                        print(f"ULTRASONIC CRITICAL STILL ACTIVE: {sensor_name}: {distance:.1f}cm")
+                        print(f"STILL CRITICAL: {sensor_name}: {distance:.1f}cm")
                         return True
                     else:
-                        print("Ultrasonic critical cleared - resuming")
+                        print("Emergency cleared - resuming")
                         self.ultrasonic_emergency_active = False
                         return False
                 else:
                     return True
         else:
             if self.ultrasonic_emergency_active:
-                print("Ultrasonic emergency cleared")
+                print("Emergency cleared by distance")
                 self.ultrasonic_emergency_active = False
             return False
 
@@ -1036,46 +1059,36 @@ class RobotController:
         summary = ultrasonic_manager.get_obstacle_summary()
         
         if summary['critical_detected']:
-            # Emergency stop already handled in check_ultrasonic_emergency_stop
             return 0, 0
         
         if not summary['warning_detected']:
-            # No warnings, proceed normally
             return base_left_speed, base_right_speed
         
-        # Apply gradual obstacle avoidance based on sensor positions
         status = summary['sensor_status']
         adjusted_left = base_left_speed
         adjusted_right = base_right_speed
         
-        # Front left sensor warning
+        # PERBAIKAN: Logika penghindaran yang benar
         if (status['front_left']['level'] == 'warning' and 
             status['front_left']['distance'] > 0):
-            print(f"Front-left warning: {status['front_left']['distance']:.1f}cm - slight right bias")
-            # Slight right turn bias
-            adjusted_left = base_left_speed * 1.1
-            adjusted_right = base_right_speed * 0.9
+            print(f"Front-left warning: {status['front_left']['distance']:.1f}cm - turning RIGHT")
+            # Halangan kiri, belok ke KANAN (bukan kiri!)
+            adjusted_left = base_left_speed * 1.2   # Percepat roda kiri
+            adjusted_right = base_right_speed * 0.7 # Perlambat roda kanan
         
-        # Front center sensor warning
         if (status['front_center']['level'] == 'warning' and 
             status['front_center']['distance'] > 0):
             print(f"Front-center warning: {status['front_center']['distance']:.1f}cm - reduce speed")
-            # Reduce overall speed
-            speed_reduction = 0.7
+            speed_reduction = 0.6  # Lebih agresif
             adjusted_left *= speed_reduction
             adjusted_right *= speed_reduction
         
-        # Front right sensor warning
         if (status['front_right']['level'] == 'warning' and 
             status['front_right']['distance'] > 0):
-            print(f"Front-right warning: {status['front_right']['distance']:.1f}cm - slight left bias")
-            # Slight left turn bias
-            adjusted_left = base_left_speed * 0.9
-            adjusted_right = base_right_speed * 1.1
-        
-        # Clamp values
-        adjusted_left = max(-self.max_speed, min(self.max_speed, adjusted_left))
-        adjusted_right = max(-self.max_speed, min(self.max_speed, adjusted_right))
+            print(f"Front-right warning: {status['front_right']['distance']:.1f}cm - turning LEFT")
+            # Halangan kanan, belok ke KIRI (bukan kanan!)
+            adjusted_left = base_left_speed * 0.7   # Perlambat roda kiri
+            adjusted_right = base_right_speed * 1.2 # Percepat roda kanan
         
         return int(adjusted_left), int(adjusted_right)
 
