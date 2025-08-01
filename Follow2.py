@@ -16,6 +16,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import String
 from uwbSENSOR.ddsm115 import MotorControl
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -25,7 +26,6 @@ from gpiozero import LED
 
 # GPIO imports for ultrasonic sensors
 import RPi.GPIO as GPIO
-from std_msgs.msg import String
 
 # Konfigurasi Global
 SCAN_THRESHOLD = 2000  # Jarak aman dalam mm
@@ -1596,60 +1596,6 @@ class LidarProcessor:
                 return best_direction
 
         return "FORWARD"
-    
-    def check_immediate_collision_threat_only(self, ultrasonic_manager, lidar):
-        """Cek HANYA ancaman tabrakan immediate (< 8cm)"""
-        
-        # Ultrasonic immediate threat (< 8cm)
-        if ultrasonic_manager:
-            critical_detected, sensor_name, distance = \
-                ultrasonic_manager.is_critical_obstacle_detected()
-            
-            if critical_detected and distance < 8:  # SANGAT dekat
-                print(f"IMMEDIATE COLLISION: {sensor_name} at {distance:.1f}cm")
-                self.execute_immediate_side_step(sensor_name)
-                return True
-        
-        # LIDAR immediate threat (< 8cm)
-        if hasattr(lidar, 'scan_data') and lidar.scan_data:
-            for angle in range(350, 361):  
-                if angle in lidar.scan_data:
-                    distance = lidar.scan_data[angle]
-                    if distance < 80:  # 8cm
-                        print(f"IMMEDIATE LIDAR COLLISION: {distance}mm")
-                        self.execute_immediate_side_step_lidar(angle)
-                        return True
-        
-        return False
-    
-    def execute_immediate_side_step(self, sensor_name):
-        """Side step minimal untuk hindari tabrakan immediate"""
-        
-        if sensor_name == 'front_center':
-            # Center blocked - side step ke yang lebih lapang
-            if self.parent and self.parent.ultrasonic_manager:
-                status = self.parent.ultrasonic_manager.get_sensor_status()
-                left_space = status.get('front_left', {}).get('distance', 0)
-                right_space = status.get('front_right', {}).get('distance', 0)
-                
-                if left_space > right_space and left_space > 10:
-                    self.move(-15, 15, smooth=False)  # Side step left
-                    print("SIDE STEP LEFT")
-                elif right_space > 10:
-                    self.move(15, -15, smooth=False)  # Side step right  
-                    print("SIDE STEP RIGHT")
-                else:
-                    self.move(-10, 10, smooth=False)  # Minimal reverse
-                    print("MINIMAL REVERSE")
-            
-        elif sensor_name == 'front_left':
-            self.move(10, -10, smooth=False)  # Small right adjustment
-            print("ADJUST RIGHT")
-            
-        elif sensor_name == 'front_right':
-            self.move(-10, 10, smooth=False)  # Small left adjustment
-            print("ADJUST LEFT")
-
 
 class RobotController:
     """Enhanced robot controller with ultra-fast response and advanced path planning"""
@@ -1768,17 +1714,77 @@ class RobotController:
             self.fast_response.start_fast_response_system()
             print("✓ Fast response system initialized")
 
+    def check_immediate_collision_threat_only(self, ultrasonic_manager, lidar):
+        """Cek HANYA ancaman tabrakan immediate (< 8cm)"""
+        
+        # Ultrasonic immediate threat (< 8cm)
+        if ultrasonic_manager:
+            critical_detected, sensor_name, distance = \
+                ultrasonic_manager.is_critical_obstacle_detected()
+            
+            if critical_detected and distance < 8:  # SANGAT dekat
+                print(f"IMMEDIATE COLLISION: {sensor_name} at {distance:.1f}cm")
+                self.execute_immediate_side_step(sensor_name)
+                return True
+        
+        # LIDAR immediate threat (< 8cm)
+        if hasattr(lidar, 'scan_data') and lidar.scan_data:
+            for angle in range(350, 361):  
+                if angle in lidar.scan_data:
+                    distance = lidar.scan_data[angle]
+                    if distance < 80:  # 8cm
+                        print(f"IMMEDIATE LIDAR COLLISION: {distance}mm")
+                        self.execute_immediate_side_step_lidar(angle)
+                        return True
+        
+        return False
+    
+    def execute_immediate_side_step(self, sensor_name):
+        """Side step minimal untuk hindari tabrakan immediate"""
+        
+        if sensor_name == 'front_center':
+            # Center blocked - side step ke yang lebih lapang
+            if self.parent and self.parent.ultrasonic_manager:
+                status = self.parent.ultrasonic_manager.get_sensor_status()
+                left_space = status.get('front_left', {}).get('distance', 0)
+                right_space = status.get('front_right', {}).get('distance', 0)
+                
+                if left_space > right_space and left_space > 10:
+                    self.move(-15, 15, smooth=False)  # Side step left
+                    print("SIDE STEP LEFT")
+                elif right_space > 10:
+                    self.move(15, -15, smooth=False)  # Side step right  
+                    print("SIDE STEP RIGHT")
+                else:
+                    self.move(-10, 10, smooth=False)  # Minimal reverse
+                    print("MINIMAL REVERSE")
+            
+        elif sensor_name == 'front_left':
+            self.move(10, -10, smooth=False)  # Small right adjustment
+            print("ADJUST RIGHT")
+            
+        elif sensor_name == 'front_right':
+            self.move(-10, 10, smooth=False)  # Small left adjustment
+            print("ADJUST LEFT")
+
+    def execute_immediate_side_step_lidar(self, angle):
+        """Side step berdasarkan LIDAR detection"""
+        
+        if 350 <= angle <= 360 or 0 <= angle <= 10:
+            # Front center - side step
+            self.move(-15, 15, smooth=False)
+            print("LIDAR SIDE STEP")
+        elif 330 <= angle <= 349:
+            # Front-left
+            self.move(10, -10, smooth=False)
+            print("LIDAR ADJUST RIGHT")
+        elif 11 <= angle <= 30:
+            # Front-right
+            self.move(-10, 10, smooth=False)
+            print("LIDAR ADJUST LEFT")
+
     # GANTI method process_control_ultra_fast
     def process_control_ultra_fast(self, uwb_distances, lidar, ultrasonic_manager=None):
-        """Ultra-fast control processing with mode checking"""
-        
-        # CEK MODE - HANYA PROSES JIKA MODE OTOMATIS
-        if hasattr(self, 'parent') and hasattr(self.parent, 'mode'):
-            if self.parent.mode != "otomatis":
-                # Stop motors jika bukan mode otomatis
-                self.move(0, 0, smooth=False)
-                return
-        
         # LEVEL 1: Immediate collision threat only (< 8cm)
         if self.check_immediate_collision_threat_only(ultrasonic_manager, lidar):
             return
@@ -1793,7 +1799,6 @@ class RobotController:
         
         # Gunakan smart obstacle avoidance
         self.process_uwb_control_with_smart_avoidance(uwb_distances, lidar, ultrasonic_manager)
-
 
     def process_uwb_control_aggressive(self, uwb_distances, lidar, ultrasonic_manager):
         """UWB control agresif dengan prioritas target following"""
@@ -1827,1063 +1832,161 @@ class RobotController:
         
         self.smooth_speed_transition(int(left_speed), int(right_speed))
 
-    def calculate_aggressive_target_speed(self, distance_to_target):
-        """Hitung kecepatan agresif menuju target"""
-        
-        if distance_to_target < 80:
-            return 50  # Dekat target - pelan tapi tidak terlalu pelan
-        elif distance_to_target < 150:  
-            return 70  # Medium distance - speed baik
-        else:
-            return self.speed  # Jauh dari target - full speed
 
-    def check_immediate_threats_fast(self, ultrasonic_manager, lidar):
-        """Ultra-fast immediate threat detection"""
+    def generate_escape_strategy(self, area_name, area_info):
+        """Generate escape strategy berdasarkan area yang dipilih"""
         
-        # Priority 1: Ultrasonic critical detection
-        if ultrasonic_manager:
-            critical_detected, sensor_name, distance = \
-                ultrasonic_manager.is_critical_obstacle_detected()
-            
-            if critical_detected and distance < 10:  # 10cm immediate
-                print(f"IMMEDIATE ULTRASONIC THREAT: {sensor_name} at {distance:.1f}cm")
-                self.execute_immediate_escape(sensor_name, distance)
-                return True
+        clearance = area_info['clearance']
         
-        # Priority 2: LIDAR critical zones
-        if hasattr(lidar, 'scan_data') and lidar.scan_data:
-            for angle in range(350, 361):  # Front critical zone
-                if angle in lidar.scan_data:
-                    distance = lidar.scan_data[angle]
-                    if distance < 100:  # 10cm
-                        print(f"IMMEDIATE LIDAR THREAT: {distance}mm at {angle}°")
-                        self.execute_immediate_escape_lidar(angle, distance)
-                        return True
-        
-        return False
-
-    def assess_obstacle_situation_fast(self, lidar, ultrasonic_manager):
-        """Ultra-fast obstacle situation assessment"""
-        
-        situation = {
-            'priority': 'NORMAL',
-            'type': 'clear_path',
-            'obstacles': {},
-            'safe_directions': [],
-            'threat_level': 0,
-            'response_needed': False
-        }
-        
-        # Check ultrasonic sensors first (fastest)
-        if ultrasonic_manager:
-            summary = ultrasonic_manager.get_obstacle_summary()
-            
-            if summary['critical_detected']:
-                situation['priority'] = 'EMERGENCY'
-                situation['type'] = 'ultrasonic_critical'
-                situation['threat_level'] = 10
-                situation['response_needed'] = True
-                
-            elif summary['warning_detected']:
-                situation['priority'] = 'CRITICAL'
-                situation['threat_level'] = max(situation['threat_level'], 7)
-                situation['response_needed'] = True
-        
-        # Check LIDAR data
-        if hasattr(lidar, 'get_obstacle_status'):
-            lidar_status = lidar.get_obstacle_status()
-            
-            if lidar_status.get('critical_danger', False):
-                situation['priority'] = 'EMERGENCY'
-                situation['type'] = 'lidar_critical'
-                situation['threat_level'] = 10
-                situation['response_needed'] = True
-                
-            elif lidar_status.get('danger_zone', False):
-                if situation['priority'] == 'NORMAL':
-                    situation['priority'] = 'CRITICAL'
-                situation['threat_level'] = max(situation['threat_level'], 8)
-                situation['response_needed'] = True
-                
-            elif (lidar_status.get('front', {}).get('obstacle', False) or
-                  lidar_status.get('left', {}).get('obstacle', False) or
-                  lidar_status.get('right', {}).get('obstacle', False)):
-                if situation['priority'] == 'NORMAL':
-                    situation['priority'] = 'WARNING'
-                situation['threat_level'] = max(situation['threat_level'], 5)
-                situation['response_needed'] = True
-        
-        return situation
-
-    def execute_immediate_escape(self, sensor_name, distance):
-        """Execute immediate escape maneuver based on sensor"""
-        
-        if sensor_name == 'front_center':
-            # Front blocked - turn to best side
-            self.execute_immediate_best_turn()
-        elif sensor_name == 'front_left':
-            # Left blocked - turn right immediately
-            self.move(25, 25, smooth=False)
-            print("IMMEDIATE RIGHT ESCAPE")
-        elif sensor_name == 'front_right':
-            # Right blocked - turn left immediately
-            self.move(-25, -25, smooth=False)
-            print("IMMEDIATE LEFT ESCAPE")
-
-    def execute_immediate_escape_lidar(self, angle, distance):
-        """Execute immediate escape based on LIDAR detection"""
-        
-        if 350 <= angle <= 360 or 0 <= angle <= 10:
-            # Front obstacle - emergency turn
-            self.execute_immediate_best_turn()
-        elif 315 <= angle <= 349:
-            # Front-left obstacle - turn right
-            self.move(25, 25, smooth=False)
-        elif 11 <= angle <= 45:
-            # Front-right obstacle - turn left
-            self.move(-25, -25, smooth=False)
-
-    def execute_immediate_best_turn(self):
-        """Execute best immediate turn based on available space"""
-        
-        # Quick assessment of available space
-        left_clear = True
-        right_clear = True
-        
-        # Check ultrasonic sensors for quick decision
-        if self.parent and self.parent.ultrasonic_manager:
-            status = self.parent.ultrasonic_manager.get_sensor_status()
-            left_clear = status.get('front_left', {}).get('distance', 100) > 20
-            right_clear = status.get('front_right', {}).get('distance', 100) > 20
-        
-        if left_clear and right_clear:
-            # Both sides clear - choose right (default)
-            self.move(25, 25, smooth=False)
-        elif left_clear:
-            # Only left clear - turn left
-            self.move(-25, -25, smooth=False)
-        elif right_clear:
-            # Only right clear - turn right
-            self.move(25, 25, smooth=False)
-        else:
-            # Both blocked - reverse
-            self.move(-20, 20, smooth=False)
-
-    def execute_emergency_response(self, obstacle_situation):
-        """Execute emergency response with path finding"""
-        
-        print(f"EMERGENCY RESPONSE: {obstacle_situation['type']}")
-        
-        # Find emergency escape route
-        escape_direction = self.find_emergency_escape_route()
-        
-        if escape_direction == "LEFT":
-            self.move(-30, -30, smooth=False)
-            print("EMERGENCY LEFT TURN")
-        elif escape_direction == "RIGHT":
-            self.move(30, 30, smooth=False)
-            print("EMERGENCY RIGHT TURN")
-        elif escape_direction == "REVERSE":
-            self.move(-25, 25, smooth=False)
-            print("EMERGENCY REVERSE")
-        else:
-            # Last resort - minimal movement
-            self.move(-10, 10, smooth=False)
-            print("EMERGENCY MINIMAL MOVEMENT")
-
-    def find_emergency_escape_route(self):
-        """Find emergency escape route quickly"""
-        
-        # Check ultrasonic sensors for quick escape assessment
-        if self.parent and self.parent.ultrasonic_manager:
-            status = self.parent.ultrasonic_manager.get_sensor_status()
-            
-            left_distance = status.get('front_left', {}).get('distance', 0)
-            right_distance = status.get('front_right', {}).get('distance', 0)
-            
-            if left_distance > 30:
-                return "LEFT"
-            elif right_distance > 30:
-                return "RIGHT"
-            else:
-                return "REVERSE"
-        
-        return "RIGHT"  # Default
-
-    def execute_critical_response(self, obstacle_situation, uwb_distances):
-        """Execute critical response with enhanced path planning"""
-        
-        print(f"CRITICAL RESPONSE: {obstacle_situation['type']}")
-        
-        # Quick path evaluation
-        if obstacle_situation['type'] == 'ultrasonic_critical':
-            self.handle_ultrasonic_critical_response(uwb_distances)
-        elif obstacle_situation['type'] == 'lidar_critical':
-            self.handle_lidar_critical_response(uwb_distances)
-        else:
-            # General critical response
-            self.handle_general_critical_response(uwb_distances)
-
-    def handle_ultrasonic_critical_response(self, uwb_distances):
-        """Handle ultrasonic critical response"""
-        
-        if self.parent and self.parent.ultrasonic_manager:
-            summary = self.parent.ultrasonic_manager.get_obstacle_summary()
-            
-            # Find alternative path
-            alternative_action = self.find_alternative_path_ultra_fast(summary)
-            
-            if alternative_action != "EMERGENCY_BRAKE":
-                print(f"ULTRASONIC ALTERNATIVE: {alternative_action}")
-                self.execute_alternative_action_fast(alternative_action)
-            else:
-                # Last resort with minimal stop
-                self.move(5, -5, smooth=False)  # Minimal movement instead of full stop
-
-    def find_alternative_path_ultra_fast(self, ultrasonic_summary):
-        """Ultra-fast alternative path finding for ultrasonic sensors"""
-        
-        status = ultrasonic_summary['sensor_status']
-        
-        # Quick assessment of available directions
-        left_clear = status.get('front_left', {}).get('distance', 0)
-        center_blocked = status.get('front_center', {}).get('distance', 0)
-        right_clear = status.get('front_right', {}).get('distance', 0)
-        
-        print(f"PATH ASSESSMENT: Left={left_clear:.1f}cm, Center={center_blocked:.1f}cm, Right={right_clear:.1f}cm")
-        
-        # Priority-based decision tree for ultra-fast response
-        
-        # Priority 1: Best side turns with good clearance
-        if left_clear > 30:
-            print("ALTERNATIVE: Sharp left turn (good clearance)")
-            return "SHARP_LEFT"
-        elif right_clear > 30:
-            print("ALTERNATIVE: Sharp right turn (good clearance)")
-            return "SHARP_RIGHT"
-        
-        # Priority 2: Moderate side turns with adequate clearance
-        elif left_clear > 20 and left_clear > right_clear:
-            print("ALTERNATIVE: Moderate left turn")
-            return "GENTLE_LEFT"
-        elif right_clear > 20:
-            print("ALTERNATIVE: Moderate right turn")
-            return "GENTLE_RIGHT"
-        
-        # Priority 3: Best available side with limited clearance
-        elif max(left_clear, right_clear) > 15:
-            best_side = "LEFT" if left_clear > right_clear else "RIGHT"
-            print(f"ALTERNATIVE: Careful {best_side.lower()} turn (limited clearance)")
-            return f"GENTLE_{best_side}"
-        
-        # Priority 4: Some space in front - slow approach
-        elif center_blocked > 15:
-            print("ALTERNATIVE: Slow forward approach")
-            return "SLOW_FORWARD"
-        
-        # Priority 5: Very limited front space - minimal forward
-        elif center_blocked > 10:
-            print("ALTERNATIVE: Minimal forward movement")
-            return "MINIMAL_FORWARD"
-        
-        # Priority 6: No front space - reverse options
-        elif max(left_clear, right_clear) > 10:
-            print("ALTERNATIVE: Reverse and turn")
-            return "REVERSE_AND_TURN"
-        
-        # Priority 7: Emergency reverse
-        elif center_blocked > 5:
-            print("ALTERNATIVE: Emergency reverse")
-            return "REVERSE_MINIMAL"
-        
-        # Last resort: Emergency brake
-        else:
-            print("NO ALTERNATIVE FOUND: Emergency brake required")
-            return "EMERGENCY_BRAKE"
-
-    def execute_alternative_action_fast(self, action):
-        """Execute alternative action with optimized speeds"""
-        
-        print(f"EXECUTING ALTERNATIVE ACTION: {action}")
-        
-        if action == "SHARP_LEFT":
-            # Sharp left turn - both wheels reverse
-            self.robot.move(-40, -40, smooth=False)
-            
-        elif action == "SHARP_RIGHT":
-            # Sharp right turn - both wheels forward
-            self.robot.move(40, 40, smooth=False)
-            
-        elif action == "GENTLE_LEFT":
-            # Gentle left turn - differential steering
-            self.robot.move(-25, 35, smooth=True)
-            
-        elif action == "GENTLE_RIGHT":
-            # Gentle right turn - differential steering
-            self.robot.move(35, -25, smooth=True)
-            
-        elif action == "SLOW_FORWARD":
-            # Slow forward movement
-            self.robot.move(20, -20, smooth=True)
-            
-        elif action == "MINIMAL_FORWARD":
-            # Very slow forward movement
-            self.robot.move(10, -10, smooth=True)
-            
-        elif action == "REVERSE_AND_TURN":
-            # Complex maneuver: reverse then turn
-            self.execute_reverse_and_turn_maneuver()
-            
-        elif action == "REVERSE_MINIMAL":
-            # Minimal reverse movement
-            self.robot.move(-15, 15, smooth=False)
-            
-        elif action == "EMERGENCY_BRAKE":
-            # Emergency stop with counter-rotation
-            self.robot.move(0, 0, smooth=False)
-            time.sleep(0.1)
-            # Optional counter-rotation for better stopping
-            self.robot.move(-10, 10, smooth=False)
-            time.sleep(0.2)
-            self.robot.move(0, 0, smooth=False)
-            
-        else:
-            # Unknown action - safe default
-            print(f"UNKNOWN ACTION: {action} - using safe default")
-            self.robot.move(-10, 10, smooth=False)
-
-    def execute_reverse_and_turn_maneuver(self):
-        """Execute complex reverse and turn maneuver"""
-        
-        print("EXECUTING: Reverse and turn maneuver")
-        
-        # Phase 1: Reverse to create space
-        self.robot.move(-20, 20, smooth=False)
-        time.sleep(0.5)  # Reverse for 0.5 seconds
-        
-        # Phase 2: Quick assessment of best turn direction
-        if hasattr(self.robot.parent, 'ultrasonic_manager'):
-            status = self.robot.parent.ultrasonic_manager.get_sensor_status()
-            left_space = status.get('front_left', {}).get('distance', 0)
-            right_space = status.get('front_right', {}).get('distance', 0)
-            
-            # Choose direction with more space
-            if left_space > right_space:
-                print("REVERSE-TURN: Turning left")
-                self.robot.move(-30, -30, smooth=False)  # Turn left
-            else:
-                print("REVERSE-TURN: Turning right")
-                self.robot.move(30, 30, smooth=False)   # Turn right
-        else:
-            # Default to right turn
-            print("REVERSE-TURN: Default right turn")
-            self.robot.move(30, 30, smooth=False)
-        
-        # Phase 3: Brief turn duration
-        time.sleep(0.8)  # Turn for 0.8 seconds
-        
-        # Phase 4: Stop and reassess
-        self.robot.move(0, 0, smooth=False)
-        print("REVERSE-TURN: Maneuver completed")
-
-    def evaluate_path_safety(self, ultrasonic_summary):
-        """Evaluate safety level of current path options"""
-        
-        status = ultrasonic_summary['sensor_status']
-        
-        safety_score = {
-            'left': 0,
-            'center': 0,
-            'right': 0,
-            'overall': 0
-        }
-        
-        # Evaluate each direction
-        for direction, sensor_name in [('left', 'front_left'), ('center', 'front_center'), ('right', 'front_right')]:
-            distance = status.get(sensor_name, {}).get('distance', 0)
-            
-            if distance > 40:
-                safety_score[direction] = 10  # Very safe
-            elif distance > 30:
-                safety_score[direction] = 8   # Safe
-            elif distance > 20:
-                safety_score[direction] = 6   # Moderate
-            elif distance > 15:
-                safety_score[direction] = 4   # Caution
-            elif distance > 10:
-                safety_score[direction] = 2   # Risky
-            else:
-                safety_score[direction] = 0   # Dangerous
-        
-        # Calculate overall safety
-        safety_score['overall'] = max(safety_score['left'], safety_score['center'], safety_score['right'])
-        
-        return safety_score
-
-    def get_priority_escape_direction(self, ultrasonic_summary):
-        """Get priority escape direction based on sensor data"""
-        
-        safety_scores = self.evaluate_path_safety(ultrasonic_summary)
-        
-        # Create priority list based on safety scores
-        directions = [
-            ('left', safety_scores['left']),
-            ('right', safety_scores['right']),
-            ('center', safety_scores['center'])
-        ]
-        
-        # Sort by safety score (highest first)
-        directions.sort(key=lambda x: x[1], reverse=True)
-        
-        print(f"ESCAPE PRIORITY: {directions[0][0].upper()} (score: {directions[0][1]})")
-        
-        return directions[0][0], directions[0][1]
-
-
-    def handle_lidar_critical_response(self, uwb_distances):
-        """Handle LIDAR critical response"""
-        
-        if hasattr(self.parent, 'lidar'):
-            status = self.parent.lidar.get_obstacle_status()
-            
-            # Find safest direction based on LIDAR data
-            directions = [
-                ('LEFT', status.get('left', {}).get('distance', 0)),
-                ('RIGHT', status.get('right', {}).get('distance', 0)),
-                ('BACK', status.get('back', {}).get('distance', 0))
-            ]
-            
-            # Sort by available space
-            directions.sort(key=lambda x: x[1], reverse=True)
-            safest_direction = directions[0][0]
-            
-            if directions[0][1] > 300:  # 30cm clearance
-                print(f"LIDAR CRITICAL ALTERNATIVE: {safest_direction}")
-                self.execute_critical_maneuver(safest_direction)
-            else:
-                # All directions blocked - minimal reverse
-                self.move(-15, 15, smooth=False)
-
-    def handle_general_critical_response(self, uwb_distances):
-        """Handle general critical response"""
-        
-        # Get target direction for reference
-        target_direction, _ = self.parent.uwb_tracker.estimate_target_direction(uwb_distances)
-        
-        # Choose escape direction opposite to most obstacles
-        escape_direction = self.calculate_escape_direction(target_direction)
-        
-        print(f"GENERAL CRITICAL RESPONSE: {escape_direction}")
-        self.execute_critical_maneuver(escape_direction)
-
-    def execute_critical_maneuver(self, direction):
-        """Execute critical maneuver in specified direction"""
-        
-        if direction == "LEFT":
-            self.move(-35, -35, smooth=False)
-        elif direction == "RIGHT":
-            self.move(35, 35, smooth=False)
-        elif direction == "BACK":
-            self.move(-30, 30, smooth=False)
-        else:
-            # Default minimal movement
-            self.move(-10, 10, smooth=False)
-
-    def generate_path_options_fast(self, obstacle_situation):
-        """Generate path options quickly based on threat level"""
-        
-        path_options = []
-        threat_level = obstacle_situation.get('threat_level', 0)
-        
-        # Option 1: Continue straight (if safe)
-        if threat_level < 6:
-            path_options.append({
-                'type': 'straight',
-                'direction': 0,
-                'speed_required': 70,
-                'turn_intensity': 0,
-                'estimated_distance': 100,
-                'scan_angles': list(range(350, 361)) + list(range(0, 11)),
-                'safety_score': 10 - threat_level
-            })
-        
-        # Option 2: Gentle left turn
-        path_options.append({
-            'type': 'gentle_left',
-            'direction': 20,
-            'speed_required': 55,
-            'turn_intensity': 20,
-            'estimated_distance': 130,
-            'scan_angles': list(range(300, 331)),
-            'safety_score': 8
-        })
-        
-        # Option 3: Gentle right turn
-        path_options.append({
-            'type': 'gentle_right',
-            'direction': -20,
-            'speed_required': 55,
-            'turn_intensity': 20,
-            'estimated_distance': 130,
-            'scan_angles': list(range(30, 61)),
-            'safety_score': 8
-        })
-        
-        # Option 4: Sharp left turn (for higher threat levels)
-        if threat_level >= 5:
-            path_options.append({
-                'type': 'sharp_left',
-                'direction': 50,
-                'speed_required': 40,
-                'turn_intensity': 50,
-                'estimated_distance': 160,
-                'scan_angles': list(range(270, 301)),
-                'safety_score': 6
-            })
-        
-        # Option 5: Sharp right turn (for higher threat levels)
-        if threat_level >= 5:
-            path_options.append({
-                'type': 'sharp_right',
-                'direction': -50,
-                'speed_required': 40,
-                'turn_intensity': 50,
-                'estimated_distance': 160,
-                'scan_angles': list(range(60, 91)),
-                'safety_score': 6
-            })
-        
-        # Option 6: Reverse and turn (for high threat levels)
-        if threat_level >= 7:
-            path_options.append({
-                'type': 'reverse_turn',
-                'direction': 180,
-                'speed_required': 25,
-                'turn_intensity': 90,
-                'estimated_distance': 200,
-                'scan_angles': list(range(150, 211)),
-                'safety_score': 4
-            })
-        
-        # Option 7: Emergency spiral (last resort)
-        if threat_level >= 9:
-            path_options.append({
-                'type': 'emergency_spiral',
-                'direction': 90,
-                'speed_required': 30,
-                'turn_intensity': 120,
-                'estimated_distance': 250,
-                'scan_angles': list(range(180, 271)),
-                'safety_score': 2
-            })
-        
-        return path_options
-
-    def select_best_path_fast(self, path_options, uwb_distances):
-        """Select best path using ultra-fast evaluation"""
-        
-        if not path_options:
-            return None
-        
-        # Get target information
-        target_direction, target_distance = self.parent.uwb_tracker.estimate_target_direction(uwb_distances)
-        target_info = {'direction': target_direction, 'distance': target_distance}
-        
-        # Get obstacle data quickly
-        obstacle_info = {}
-        if hasattr(self.parent, 'lidar') and hasattr(self.parent.lidar, 'scan_data'):
-            obstacle_info.update(self.parent.lidar.scan_data)
-        
-        # Add ultrasonic obstacle data
-        if hasattr(self.parent, 'ultrasonic_manager') and self.parent.ultrasonic_manager:
-            status = self.parent.ultrasonic_manager.get_sensor_status()
-            for sensor_name, data in status.items():
-                if data['distance'] > 0:
-                    if sensor_name == 'front_left':
-                        obstacle_info[315] = data['distance'] * 10
-                    elif sensor_name == 'front_center':
-                        obstacle_info[0] = data['distance'] * 10
-                    elif sensor_name == 'front_right':
-                        obstacle_info[45] = data['distance'] * 10
-        
-        best_path = None
-        best_score = float('-inf')
-        
-        for path in path_options:
-            # Fast scoring based on multiple criteria
-            score = self.calculate_path_score_fast(path, target_info, obstacle_info)
-            
-            if score > best_score:
-                best_score = score
-                best_path = path
-        
-        if best_path:
-            print(f"Selected path: {best_path['type']} (score: {best_score:.2f})")
-        
-        return best_path
-
-    def calculate_path_score_fast(self, path, target_info, obstacle_info):
-        """Calculate path score quickly using simplified metrics"""
-        
-        score = path.get('safety_score', 5)  # Base safety score
-        
-        # Target alignment bonus
-        target_direction = target_info.get('direction', 0)
-        path_direction = path.get('direction', 0)
-        
-        angle_diff = abs(target_direction - path_direction)
-        angle_diff = min(angle_diff, 360 - angle_diff)
-        
-        alignment_bonus = max(0, 5 - (angle_diff / 36))  # Up to 5 points for alignment
-        score += alignment_bonus
-        
-        # Obstacle clearance check
-        scan_angles = path.get('scan_angles', [])
-        min_clearance = float('inf')
-        
-        for angle in scan_angles:
-            if angle in obstacle_info:
-                distance = obstacle_info[angle]
-                if distance > 0:
-                    min_clearance = min(min_clearance, distance)
-        
-        # Clearance bonus/penalty
-        if min_clearance == float('inf'):
-            clearance_bonus = 5  # No obstacles detected
-        elif min_clearance > 500:
-            clearance_bonus = 4
-        elif min_clearance > 300:
-            clearance_bonus = 2
-        elif min_clearance > 150:
-            clearance_bonus = 0
-        else:
-            clearance_bonus = -10  # Dangerous path
-        
-        score += clearance_bonus
-        
-        # Speed bonus (prefer faster paths when safe)
-        speed_bonus = path.get('speed_required', 30) / 20  # Up to 3.5 points
-        score += min(3.5, speed_bonus)
-        
-        # Simplicity bonus (prefer straighter paths)
-        turn_penalty = path.get('turn_intensity', 0) / 30  # Penalty for complex turns
-        score -= min(3, turn_penalty)
-        
-        return score
-
-    def execute_path_fast(self, path):
-        """Execute selected path with optimized movements"""
-        
-        if not path:
-            # Fallback to minimal safe movement
-            self.move(-5, 5, smooth=False)
-            return
-        
-        path_type = path['type']
-        speed = path['speed_required']
-        
-        if path_type == 'straight':
-            self.move(speed, -speed, smooth=False)
-            print(f"EXECUTING: Straight forward at {speed}")
-            
-        elif path_type == 'gentle_left':
-            left_speed = speed * 0.6
-            right_speed = -speed
-            self.move(left_speed, right_speed, smooth=True)
-            print(f"EXECUTING: Gentle left turn L={left_speed:.0f} R={right_speed}")
-            
-        elif path_type == 'gentle_right':
-            left_speed = speed
-            right_speed = -speed * 0.6
-            self.move(left_speed, right_speed, smooth=True)
-            print(f"EXECUTING: Gentle right turn L={left_speed} R={right_speed:.0f}")
-            
-        elif path_type == 'sharp_left':
-            self.move(-speed//2, -speed//2, smooth=False)
-            print(f"EXECUTING: Sharp left turn at {speed//2}")
-            
-        elif path_type == 'sharp_right':
-            self.move(speed//2, speed//2, smooth=False)
-            print(f"EXECUTING: Sharp right turn at {speed//2}")
-            
-        elif path_type == 'reverse_turn':
-            # Execute reverse and turn maneuver
-            self.execute_reverse_turn_fast(speed)
-            
-        elif path_type == 'emergency_spiral':
-            # Execute emergency spiral maneuver
-            self.execute_emergency_spiral(speed)
-            
-        else:
-            # Unknown path type - safe default
-            self.move(speed//3, -speed//3, smooth=True)
-            print(f"EXECUTING: Default safe movement at {speed//3}")
-        
-        self.current_direction = f"FAST_{path_type.upper()}"
-
-    def execute_reverse_turn_fast(self, base_speed):
-        """Execute fast reverse and turn maneuver"""
-        
-        print("EXECUTING: Fast reverse and turn")
-        
-        # Quick reverse
-        reverse_speed = base_speed // 2
-        self.move(-reverse_speed, reverse_speed, smooth=False)
-        
-        # Short delay
-        time.sleep(0.3)
-        
-        # Quick turn assessment
-        turn_direction = self.assess_turn_direction_fast()
-        
-        if turn_direction == "LEFT":
-            self.move(-base_speed, -base_speed, smooth=False)
-        else:
-            self.move(base_speed, base_speed, smooth=False)
-
-    def execute_emergency_spiral(self, base_speed):
-        """Execute emergency spiral maneuver"""
-        
-        print("EXECUTING: Emergency spiral escape")
-        
-        # Start with small radius turn
-        spiral_speed = base_speed // 2
-        
-        # Gradually increasing turn radius
-        for i in range(3):
-            turn_speed = spiral_speed + (i * 5)
-            self.move(-turn_speed, -turn_speed, smooth=False)
-            time.sleep(0.1)
-
-    def assess_turn_direction_fast(self):
-        """Quickly assess best turn direction"""
-        
-        if hasattr(self.parent, 'ultrasonic_manager') and self.parent.ultrasonic_manager:
-            status = self.parent.ultrasonic_manager.get_sensor_status()
-            
-            left_clear = status.get('front_left', {}).get('distance', 0)
-            right_clear = status.get('front_right', {}).get('distance', 0)
-            
-            if left_clear > right_clear:
-                return "LEFT"
-            else:
-                return "RIGHT"
-        
-        return "RIGHT"  # Default
-
-    def calculate_escape_direction(self, target_direction):
-        """Calculate best escape direction"""
-        
-        if target_direction is None:
-            return "RIGHT"  # Default
-        
-        # Choose direction that maintains some progress toward target
-        if 0 <= target_direction <= 90 or 270 <= target_direction <= 360:
-            return "LEFT"  # Target on right side, escape left
-        else:
-            return "RIGHT"  # Target on left side, escape right
-
-    def process_uwb_control_with_smart_avoidance(self, uwb_distances, lidar, ultrasonic_manager):
-        """UWB control dengan smart obstacle avoidance"""
-        
-        A0, A1, A2 = uwb_distances['A0'], uwb_distances['A1'], uwb_distances['A2']
-        
-        # Calculate basic UWB movement
-        angle_error = A2 - A1
-        base_speed = self.calculate_aggressive_target_speed(A0)
-        
-        # Calculate base wheel speeds
-        if abs(angle_error) < 10:
-            base_left_speed = base_speed
-            base_right_speed = -base_speed
-        elif angle_error < 0:  # Target kanan
-            turn_factor = min(1.0, abs(angle_error) / 40.0)
-            base_left_speed = base_speed * (1.0 + turn_factor * 0.5)
-            base_right_speed = -base_speed * (1.0 - turn_factor * 0.7)
-        else:  # Target kiri
-            turn_factor = min(1.0, abs(angle_error) / 40.0)
-            base_left_speed = base_speed * (1.0 - turn_factor * 0.7)
-            base_right_speed = -base_speed * (1.0 + turn_factor * 0.5)
-        
-        # Apply smart obstacle avoidance
-        if ultrasonic_manager:
-            avoidance_strategy = self.evaluate_obstacle_avoidance_strategy(ultrasonic_manager, lidar)
-            
-            if avoidance_strategy['priority'] in ['HIGH', 'MEDIUM']:
-                # Apply obstacle avoidance adjustment
-                final_left_speed, final_right_speed = self.execute_obstacle_avoidance_movement(
-                    avoidance_strategy, base_left_speed, base_right_speed
-                )
-                print(f"SMART AVOIDANCE: {avoidance_strategy['description']}")
-            else:
-                # No significant obstacles - use base speeds
-                final_left_speed, final_right_speed = base_left_speed, base_right_speed
-                
-        else:
-            final_left_speed, final_right_speed = base_left_speed, base_right_speed
-        
-        # Execute movement
-        self.smooth_speed_transition(int(final_left_speed), int(final_right_speed))
-        
-        print(f"UWB SMART: A0={A0:.1f}cm | Error={angle_error:.1f} | L={final_left_speed:.0f} R={final_right_speed:.0f}")
-
-
-    def apply_minimal_obstacle_adjustment(self, left_speed, right_speed, ultrasonic_manager):
-        """Adjustment minimal - hanya untuk obstacle yang benar-benar menghalangi"""
-        
-        summary = ultrasonic_manager.get_obstacle_summary()
-        
-        # HANYA adjust jika critical (< 15cm) DAN menghalangi jalur langsung
-        if not summary['critical_detected']:
-            return left_speed, right_speed
-        
-        status = summary['sensor_status']
-        center_distance = status.get('front_center', {}).get('distance', 100)
-        
-        # Jika center masih aman (> 15cm), TIDAK perlu adjustment
-        if center_distance > 15:
-            return left_speed, right_speed
-        
-        # Cari jalur samping yang tersedia
-        left_distance = status.get('front_left', {}).get('distance', 0)
-        right_distance = status.get('front_right', {}).get('distance', 0)
-        
-        if left_distance > 20:  # Kiri cukup lapang
-            # Slight left turn
-            return int(left_speed * 0.7), int(right_speed * 1.3)
-        elif right_distance > 20:  # Kanan cukup lapang
-            # Slight right turn  
-            return int(left_speed * 1.3), int(right_speed * 0.7)
-        else:
-            # Kedua sisi sempit - perlambat sedikit tapi tetap maju
-            return int(left_speed * 0.6), int(right_speed * 0.6)
-
-
-    def find_alternative_path_ultra_fast(self, ultrasonic_summary):
-        """Ultra-fast alternative path finding for ultrasonic sensors"""
-        
-        status = ultrasonic_summary['sensor_status']
-        
-        # Quick assessment of available directions
-        left_clear = status.get('front_left', {}).get('distance', 0)
-        center_blocked = status.get('front_center', {}).get('distance', 0)
-        right_clear = status.get('front_right', {}).get('distance', 0)
-        
-        # Priority-based decision tree
-        if left_clear > 30:
-            return "SHARP_LEFT"
-        elif right_clear > 30:
-            return "SHARP_RIGHT"
-        elif max(left_clear, right_clear) > 20:
-            return "GENTLE_LEFT" if left_clear > right_clear else "GENTLE_RIGHT"
-        elif center_blocked > 15:  # Some space in front
-            return "SLOW_FORWARD"
-        else:
-            return "REVERSE_MINIMAL"
-
-    def execute_alternative_speeds(self, action, base_left, base_right):
-        """Execute alternative action and return appropriate speeds"""
-        
-        if action == "SHARP_LEFT":
-            return -abs(base_left), -abs(base_left)
-        elif action == "SHARP_RIGHT":
-            return abs(base_right), abs(base_right)
-        elif action == "GENTLE_LEFT":
-            return base_left * 0.3, base_right * 1.2
-        elif action == "GENTLE_RIGHT":
-            return base_left * 1.2, base_right * 0.3
-        elif action == "SLOW_FORWARD":
-            return base_left * 0.4, base_right * 0.4
-        elif action == "REVERSE_MINIMAL":
-            return -abs(base_left) * 0.3, abs(base_right) * 0.3
-        else:
-            return 0, 0
-        
-    def evaluate_obstacle_avoidance_strategy(self, ultrasonic_manager, lidar):
-        """Evaluasi strategi obstacle avoidance berdasarkan logika baru"""
-        
-        # Dapatkan data sensor ultrasonik
-        ultrasonic_status = ultrasonic_manager.get_sensor_status() if ultrasonic_manager else {}
-        
-        # Dapatkan data LIDAR
-        lidar_status = lidar.get_obstacle_status() if hasattr(lidar, 'get_obstacle_status') else {}
-        
-        # Ekstrak jarak dari setiap sensor
-        front_left_diag_distance = ultrasonic_status.get('front_left_diagonal', {}).get('distance', float('inf'))
-        front_center_distance = ultrasonic_status.get('front_center', {}).get('distance', float('inf'))
-        front_right_diag_distance = ultrasonic_status.get('front_right_diagonal', {}).get('distance', float('inf'))
-        
-        # Threshold untuk deteksi rintangan dekat
-        CLOSE_OBSTACLE_THRESHOLD = 25  # cm
-        SAFE_DISTANCE_THRESHOLD = 40   # cm
-        
-        # Logika sesuai permintaan
-        strategy = self.determine_avoidance_strategy(
-            front_left_diag_distance, front_center_distance, front_right_diag_distance,
-            CLOSE_OBSTACLE_THRESHOLD, SAFE_DISTANCE_THRESHOLD, lidar_status
-        )
-        
-        return strategy
-
-    def determine_avoidance_strategy(self, left_diag_dist, center_dist, right_diag_dist, 
-                                close_threshold, safe_threshold, lidar_status):
-        """Tentukan strategi penghindaran berdasarkan kondisi sensor"""
-        
-        # Kondisi 1: Front left diagonal ada rintangan dekat, center dan right diagonal aman
-        if (left_diag_dist <= close_threshold and 
-            center_dist > safe_threshold and 
-            right_diag_dist > safe_threshold):
-            
-            # Validasi dengan LIDAR untuk area serong kanan depan
-            if self.is_right_front_diagonal_safe_lidar(lidar_status):
-                return {
-                    'action': 'diagonal_right_forward',
-                    'description': 'Obstacle di serong kiri depan - bergerak serong kanan depan',
-                    'left_speed_factor': 1.2,
-                    'right_speed_factor': 0.7,
-                    'priority': 'HIGH'
-                }
-        
-        # Kondisi 2: Front right diagonal ada rintangan dekat, center dan left diagonal aman  
-        elif (right_diag_dist <= close_threshold and 
-            center_dist > safe_threshold and 
-            left_diag_dist > safe_threshold):
-            
-            # Validasi dengan LIDAR untuk area serong kiri depan
-            if self.is_left_front_diagonal_safe_lidar(lidar_status):
-                return {
-                    'action': 'diagonal_left_forward',
-                    'description': 'Obstacle di serong kanan depan - bergerak serong kiri depan',
-                    'left_speed_factor': 0.7,
-                    'right_speed_factor': 1.2,
-                    'priority': 'HIGH'
-                }
-        
-        # Kondisi 3: Multiple obstacles - gunakan strategi kombinasi LIDAR + Ultrasonik
-        elif (left_diag_dist <= close_threshold or right_diag_dist <= close_threshold):
-            return self.evaluate_complex_obstacle_scenario(
-                left_diag_dist, center_dist, right_diag_dist, lidar_status
-            )
-        
-        # Kondisi 4: Tidak ada rintangan dekat - lanjutkan normal
-        else:
+        if area_name == 'sharp_left':
             return {
-                'action': 'continue_normal',
-                'description': 'Tidak ada rintangan terdeteksi - lanjutkan normal',
-                'left_speed_factor': 1.0,
+                'action': 'sharp_left_escape',
+                'description': f'Sharp left escape - clearance: {clearance:.0f}mm',
+                'left_speed_factor': -0.8,
+                'right_speed_factor': -0.8,
+                'priority': 'HIGH'
+            }
+            
+        elif area_name == 'left_diagonal':
+            return {
+                'action': 'diagonal_left_escape',
+                'description': f'Diagonal left escape - clearance: {clearance:.0f}mm',
+                'left_speed_factor': 0.5,
                 'right_speed_factor': 1.0,
-                'priority': 'LOW'
+                'priority': 'HIGH'
+            }
+            
+        elif area_name == 'right_diagonal':
+            return {
+                'action': 'diagonal_right_escape',
+                'description': f'Diagonal right escape - clearance: {clearance:.0f}mm',
+                'left_speed_factor': 1.0,
+                'right_speed_factor': 0.5,
+                'priority': 'HIGH'
+            }
+            
+        elif area_name == 'sharp_right':
+            return {
+                'action': 'sharp_right_escape',
+                'description': f'Sharp right escape - clearance: {clearance:.0f}mm',
+                'left_speed_factor': 0.8,
+                'right_speed_factor': 0.8,
+                'priority': 'HIGH'
+            }
+            
+        else:  # reverse
+            return {
+                'action': 'reverse_escape',
+                'description': f'Reverse escape - clearance: {clearance:.0f}mm',
+                'left_speed_factor': -0.6,
+                'right_speed_factor': 0.6,
+                'priority': 'MEDIUM'
             }
 
-    def is_right_front_diagonal_safe_lidar(self, lidar_status):
-        """Validasi keamanan area serong kanan depan menggunakan LIDAR"""
-        
-        if not lidar_status.get('data_valid', False):
-            return True  # Assume safe jika LIDAR tidak valid
-        
-        # Cek area LIDAR untuk serong kanan depan (30° - 60°)
-        if hasattr(self.parent, 'lidar') and hasattr(self.parent.lidar, 'scan_data'):
-            scan_data = self.parent.lidar.scan_data
-            
-            min_distance_in_area = float('inf')
-            for angle in range(30, 61):  # 30° - 60° untuk serong kanan depan
-                if angle in scan_data:
-                    distance = scan_data[angle]
-                    if distance > 0:
-                        min_distance_in_area = min(min_distance_in_area, distance)
-            
-            # Area aman jika jarak minimum > 400mm (40cm)
-            return min_distance_in_area > 400
-        
-        return True
-
-    def is_left_front_diagonal_safe_lidar(self, lidar_status):
-        """Validasi keamanan area serong kiri depan menggunakan LIDAR"""
-        
-        if not lidar_status.get('data_valid', False):
-            return True
-        
-        # Cek area LIDAR untuk serong kiri depan (300° - 330°)
-        if hasattr(self.parent, 'lidar') and hasattr(self.parent.lidar, 'scan_data'):
-            scan_data = self.parent.lidar.scan_data
-            
-            min_distance_in_area = float('inf')
-            for angle in range(300, 331):  # 300° - 330° untuk serong kiri depan
-                if angle in scan_data:
-                    distance = scan_data[angle]
-                    if distance > 0:
-                        min_distance_in_area = min(min_distance_in_area, distance)
-            
-            return min_distance_in_area > 400
-        
-        return True
-
-    def evaluate_complex_obstacle_scenario(self, left_diag_dist, center_dist, right_diag_dist, lidar_status):
-        """Evaluasi skenario obstacle kompleks dengan kombinasi sensor"""
-        
-        # Skenario: Multiple obstacles detected
-        obstacles_detected = []
-        
-        if left_diag_dist <= 25:
-            obstacles_detected.append('left_diagonal')
-        if center_dist <= 25:
-            obstacles_detected.append('center')
-        if right_diag_dist <= 25:
-            obstacles_detected.append('right_diagonal')
-        
-        # Strategi berdasarkan kombinasi obstacle
-        if len(obstacles_detected) >= 2:
-            # Multiple obstacles - cari jalur terbaik menggunakan LIDAR
-            return self.find_best_escape_route_with_lidar(lidar_status)
-        
-        # Single obstacle - gunakan strategi default
+    def get_emergency_fallback_strategy(self):
+        """Strategi fallback emergency jika LIDAR tidak tersedia"""
         return {
-            'action': 'cautious_forward',
-            'description': 'Single obstacle detected - gerakan hati-hati',
-            'left_speed_factor': 0.6,
-            'right_speed_factor': 0.6,
-            'priority': 'MEDIUM'
+            'action': 'emergency_stop_with_minimal_movement',
+            'description': 'Emergency fallback - LIDAR tidak tersedia',
+            'left_speed_factor': 0.1,
+            'right_speed_factor': -0.1,
+            'priority': 'HIGH'
         }
 
-    def find_best_escape_route_with_lidar(self, lidar_status):
-        """Cari rute pelarian terbaik menggunakan data LIDAR"""
+    def execute_obstacle_avoidance_movement(self, strategy, base_left_speed, base_right_speed):
+        """Execute obstacle avoidance movement berdasarkan strategi"""
         
-        if not hasattr(self.parent, 'lidar') or not hasattr(self.parent.lidar, 'scan_data'):
-            return self.get_emergency_fallback_strategy()
+        action = strategy['action']
+        left_factor = strategy.get('left_speed_factor', 1.0)
+        right_factor = strategy.get('right_speed_factor', 1.0)
         
-        scan_data = self.parent.lidar.scan_data
+        # Apply factors to base speeds
+        final_left_speed = int(base_left_speed * left_factor)
+        final_right_speed = int(base_right_speed * right_factor)
         
-        # Analisis area-area potensial untuk pelarian
-        escape_areas = {
-            'sharp_left': self.analyze_lidar_area(scan_data, 270, 300),      # 270° - 300°
-            'left_diagonal': self.analyze_lidar_area(scan_data, 300, 330),   # 300° - 330°
-            'right_diagonal': self.analyze_lidar_area(scan_data, 30, 60),    # 30° - 60°
-            'sharp_right': self.analyze_lidar_area(scan_data, 60, 90),       # 60° - 90°
-            'reverse': self.analyze_lidar_area(scan_data, 150, 210)          # 150° - 210°
-        }
+        # Ensure speeds are within limits
+        final_left_speed = max(-self.speed, min(self.speed, final_left_speed))
+        final_right_speed = max(-self.speed, min(self.speed, final_right_speed))
         
-        # Pilih area dengan clearance terbaik
-        best_area = max(escape_areas.items(), key=lambda x: x[1]['clearance'])
-        
-        return self.generate_escape_strategy(best_area[0], best_area[1])
+        return final_left_speed, final_right_speed
 
-    def analyze_lidar_area(self, scan_data, start_angle, end_angle):
-        """Analisis area LIDAR untuk clearance"""
+    def smooth_speed_transition(self, target_left, target_right):
+        """Smooth transition between speeds untuk menghindari jerk"""
         
-        distances = []
-        for angle in range(start_angle, end_angle + 1):
-            if angle in scan_data and scan_data[angle] > 0:
-                distances.append(scan_data[angle])
+        current_time = time.time()
         
-        if not distances:
-            return {'clearance': 0, 'avg_distance': 0, 'min_distance': 0}
+        # Hitung perbedaan waktu
+        time_diff = current_time - self.last_command_time
+        if time_diff < self.min_command_interval:
+            return  # Terlalu cepat, skip
         
-        return {
-            'clearance': min(distances),
-            'avg_distance': sum(distances) / len(distances),
-            'min_distance': min(distances)
-        }
+        # Hitung maksimum perubahan berdasarkan waktu
+        max_change = self.speed_adjustment_rate * time_diff
+        
+        # Apply gradual change
+        left_diff = target_left - self.current_left_speed
+        right_diff = target_right - self.current_right_speed
+        
+        # Limit perubahan
+        if abs(left_diff) > max_change:
+            left_diff = max_change if left_diff > 0 else -max_change
+        if abs(right_diff) > max_change:
+            right_diff = max_change if right_diff > 0 else -max_change
+        
+        # Update current speeds
+        self.current_left_speed += left_diff
+        self.current_right_speed += right_diff
+        
+        # Execute movement
+        self.move(int(self.current_left_speed), int(self.current_right_speed), smooth=True)
+        
+        self.last_command_time = current_time
 
+    def move(self, left_speed, right_speed, smooth=True):
+        """Enhanced movement dengan logging dan safety checks"""
+        
+        # Safety limits
+        left_speed = max(-self.max_speed, min(self.max_speed, left_speed))
+        right_speed = max(-self.max_speed, min(self.max_speed, right_speed))
+        
+        # Check for significant command change
+        speed_change = abs(left_speed - self.last_command[0]) + abs(right_speed - self.last_command[1])
+        
+        if speed_change < self.command_threshold and smooth:
+            return  # Skip minor changes
+        
+        try:
+            # Send commands to motors
+            self.left_motor.send_rpm(1, left_speed)
+            self.right_motor.send_rpm(1, right_speed)
+            
+            # Update state
+            self.last_command = (left_speed, right_speed)
+            self.last_command_time = time.time()
+            
+            # Log significant movements
+            if speed_change > 20:
+                print(f"MOTOR: L={left_speed:3d} R={right_speed:3d}")
+                
+        except Exception as e:
+            print(f"Motor command error: {e}")
+            # Emergency stop on error
+            try:
+                self.left_motor.send_rpm(1, 0)
+                self.right_motor.send_rpm(1, 0)
+            except:
+                pass
+
+    def stop_motors(self):
+        """Stop motors safely"""
+        try:
+            self.left_motor.send_rpm(1, 0)
+            self.right_motor.send_rpm(1, 0)
+            self.current_left_speed = 0
+            self.current_right_speed = 0
+            print("MOTORS STOPPED")
+        except Exception as e:
+            print(f"Error stopping motors: {e}")
 
 class PerformanceMonitor:
     """Monitor system performance and response times"""
@@ -2980,32 +2083,24 @@ Performance Summary (Uptime: {uptime:.1f}s):
             return True
         return False
 
-
 class FollowingRobotNode(Node):
-    """Main ROS2 node for the enhanced mobile robot with mode switching support"""
+    """Main ROS2 node for the enhanced mobile robot with mode switching"""
     
     def __init__(self):
         super().__init__('following_robot_node')
         
-        # ===== TAMBAHAN UNTUK MODE CONTROL =====
-        # Mode control variables
-        self.current_mode = 'manual'  # Default mode
-        self.auto_mode_active = False
-        
         # Initialize components
         self.running = True
+        self.current_mode = 'manual'  # Default ke manual
+        self.mode_active = False
         
-        # ===== SETUP MODE SUBSCRIPTION DULU =====
-        # Setup mode subscription SEBELUM komponen lain
-        self.setup_mode_subscription()
-        
-        # Initialize robot components setelah mode subscription
-        self.initialize_robot_components()
-        
-        print("✓ FollowingRobotNode with mode control initialized successfully")
-        
-        # Initialize components
-        self.running = True
+        # Subscribe to mode switching
+        self.mode_subscription = self.create_subscription(
+            String,
+            '/robot_mode',
+            self.mode_callback,
+            10
+        )
         
         # Initialize UWB tracker
         self.uwb_tracker = UWBTracker()
@@ -3043,128 +2138,31 @@ class FollowingRobotNode(Node):
         # Turn on program start indicator
         gpio_pin_17.on()
         
-        print("✓ FollowingRobotNode initialized successfully with mode switching support")
+        print("✓ FollowingRobotNode initialized successfully")
+        print(f"✓ Starting in {self.current_mode.upper()} mode")
 
-    def setup_mode_subscription(self):
-        """Setup mode switcher subscription - FUNGSI BARU"""
-        self.mode_subscription = self.create_subscription(
-            String,
-            '/robot_mode',
-            self.mode_callback,
-            10
-        )
-        print("✓ Mode switcher subscription created")
-    
     def mode_callback(self, msg):
-        """Handle mode change from mode switcher - FUNGSI BARU"""
+        """Callback untuk switching mode"""
         new_mode = msg.data
-        
         if new_mode != self.current_mode:
-            old_mode = self.current_mode
+            self.get_logger().info(f'Mode berubah dari {self.current_mode} ke {new_mode}')
             self.current_mode = new_mode
-            print(f"🔄 MODE CHANGED: {old_mode.upper()} → {self.current_mode.upper()}")
             
             if new_mode == 'otomatis':
-                self.activate_auto_mode()
+                self.mode_active = True
+                self.get_logger().info('MODE OTOMATIS AKTIF')
+                print("🤖 AUTONOMOUS MODE ACTIVATED")
+                print("   - Target following enabled")
+                print("   - Advanced obstacle avoidance active") 
+                print("   - All sensors operational")
             else:
-                self.deactivate_auto_mode()
-    
-    def activate_auto_mode(self):
-        """Activate autonomous mode - FUNGSI BARU"""
-        if not self.auto_mode_active:
-            self.auto_mode_active = True
-            print("🤖 AUTONOMOUS MODE ACTIVATED")
-            
-            # Start control timer if not running
-            if not hasattr(self, 'control_timer') or self.control_timer is None:
-                self.setup_control_timer()
-            
-            # Turn on program indicator
-            try:
-                gpio_pin_17.on()
-            except Exception as e:
-                print(f"Warning: Could not control GPIO: {e}")
-            
-            # Initialize fast response system
-            if hasattr(self.controller, 'initialize_fast_response'):
-                self.controller.initialize_fast_response()
-
-    def deactivate_auto_mode(self):
-        """Deactivate autonomous mode - FUNGSI BARU"""
-        if self.auto_mode_active:
-            self.auto_mode_active = False
-            print("🛑 AUTONOMOUS MODE DEACTIVATED")
-            
-            # Stop robot immediately
-            try:
-                self.controller.move(0, 0, smooth=False)
-                print("✓ Robot stopped")
-            except Exception as e:
-                print(f"Error stopping robot: {e}")
-            
-            # Stop control timer
-            if hasattr(self, 'control_timer') and self.control_timer:
-                self.control_timer.cancel()
-                self.control_timer = None
-            
-            # Turn off program indicator
-            try:
-                gpio_pin_17.off()
-            except Exception as e:
-                print(f"Warning: Could not control GPIO: {e}")
-
-    def initialize_robot_components(self):
-        """Initialize robot components - FUNGSI BARU (PISAHKAN DARI __init__)"""
-        # Initialize UWB tracker
-        self.uwb_tracker = UWBTracker()
-        
-        # Initialize LIDAR processor
-        self.lidar = LidarProcessor()
-        
-        # Initialize ultrasonic sensor manager
-        try:
-            self.ultrasonic_manager = UltrasonicSensorManager()
-        except Exception as e:
-            print(f"Warning: Could not initialize ultrasonic sensors: {e}")
-            self.ultrasonic_manager = None
-        
-        # Initialize robot controller
-        self.controller = RobotController("/dev/ttyUSB1", "/dev/ttyUSB0")
-        self.controller.parent = self  # Set parent reference
-        
-        # Initialize performance monitor
-        self.performance_monitor = None
-        
-        # Control parameters
-        self.control_frequency = CONTROL_FREQUENCY
-        self.uwb_timeout = UWB_TIMEOUT
-        
-        # UWB socket setup
-        self.setup_uwb_communication()
-        
-        # LIDAR subscription
-        self.setup_lidar_subscription()
-        
-        # JANGAN setup control timer di sini - tunggu aktivasi auto mode
-        print("✓ Robot components initialized (waiting for auto mode activation)")
-
-    
-    def mode_callback(self, msg):
-        """Handle mode changes for automatic system"""
-        old_mode = self.mode
-        self.mode = msg.data
-        
-        self.get_logger().info(f"[AUTO MODE CHANGE] {old_mode} → {self.mode}")
-        
-        if self.mode != "otomatis":
-            # Stop automatic movement when not in auto mode
-            try:
-                self.controller.move(0, 0, smooth=False)
-                self.get_logger().info("[AUTO MODE] Disabled - motors stopped")
-            except:
-                pass
-        else:
-            self.get_logger().info("[AUTO MODE] Enabled - automatic navigation active")
+                self.mode_active = False
+                # Stop motors when switching to manual
+                self.controller.stop_motors()
+                self.get_logger().info('MODE MANUAL AKTIF - Motor dihentikan')
+                print("🎮 MANUAL MODE ACTIVATED")
+                print("   - Motors stopped safely")
+                print("   - Awaiting manual control")
     
     def setup_uwb_communication(self):
         """Setup UWB communication"""
@@ -3204,11 +2202,7 @@ class FollowingRobotNode(Node):
         print("✓ LIDAR subscription created")
     
     def setup_control_timer(self):
-        """Setup main control timer - DIMODIFIKASI untuk conditional setup"""
-        # Only setup timer if in auto mode
-        if not self.auto_mode_active:
-            return
-            
+        """Setup main control timer"""
         timer_period = 1.0 / self.control_frequency
         
         self.control_timer = self.create_timer(
@@ -3218,7 +2212,6 @@ class FollowingRobotNode(Node):
         )
         
         print(f"✓ Control timer setup at {self.control_frequency}Hz")
-
     
     def lidar_callback(self, msg):
         """LIDAR data callback"""
@@ -3228,35 +2221,10 @@ class FollowingRobotNode(Node):
             print(f"LIDAR callback error: {e}")
     
     def control_loop_callback(self):
-        """Main control loop callback with enhanced mode checking"""
-        
-        if not self.auto_mode_active or self.current_mode != 'otomatis':
-                return  # Exit early if not in auto mode
+        """Main control loop callback - hanya aktif di mode otomatis"""
+        if not self.mode_active or self.current_mode != 'otomatis':
+            return  # Skip control loop jika mode manual
             
-        start_time = time.time()
-
-        # Debug counter
-        if not hasattr(self, 'debug_counter'):
-            self.debug_counter = 0
-            self.last_debug_time = 0
-        
-        self.debug_counter += 1
-        current_time = time.time()
-        
-        # Log status setiap 5 detik untuk debugging
-        if current_time - self.last_debug_time > 5.0:
-            self.get_logger().info(f"[AUTO DEBUG] Mode: {self.mode}, Loop count: {self.debug_counter}")
-            self.last_debug_time = current_time
-        
-        # ===== CEK MODE DI AWAL - HANYA AKTIF SAAT MODE OTOMATIS =====
-        if self.mode != "otomatis":
-            # Stop motors dan return jika bukan mode otomatis
-            try:
-                self.controller.move(0, 0, smooth=False)
-            except:
-                pass
-            return
-        
         start_time = time.time()
         
         try:
@@ -3282,7 +2250,6 @@ class FollowingRobotNode(Node):
                 
         except Exception as e:
             print(f"Control loop error: {e}")
-
     
     def get_uwb_data(self):
         """Get UWB data from socket"""
@@ -3314,13 +2281,9 @@ class FollowingRobotNode(Node):
         return None
     
     def stop(self):
-        """Stop the robot node - DIMODIFIKASI dengan mode awareness"""
+        """Stop the robot node"""
         print("Stopping robot node...")
         self.running = False
-        
-        # Deactivate auto mode first
-        if hasattr(self, 'auto_mode_active'):
-            self.deactivate_auto_mode()
         
         # Stop ultrasonic sensors
         if self.ultrasonic_manager:
@@ -3328,7 +2291,7 @@ class FollowingRobotNode(Node):
         
         # Stop motors
         try:
-            self.controller.move(0, 0, smooth=False)
+            self.controller.stop_motors()
         except:
             pass
         
@@ -3386,11 +2349,12 @@ def main(args=None):
     try:
         print("=" * 60)
         print("   ENHANCED MOBILE ROBOT WITH ADVANCED OBSTACLE AVOIDANCE")
+        print("                    MODE SWITCHING ENABLED")
         print("=" * 60)
         print("Initializing robot systems...")
         
         # Test system requirements
-        print("\n System Requirements Check:")
+        print("\n🔧 System Requirements Check:")
         
         # Test GPIO availability
         try:
@@ -3421,9 +2385,9 @@ def main(args=None):
         except Exception as e:
             print(f"⚠ Some sensor pins may not be accessible: {e}")
         
-        print("\n烙 Creating robot node...")
+        print("\n🚀 Creating robot node...")
         
-        # Create enhanced node
+        # Create enhanced node with mode switching
         node = FollowingRobotNode()
         print("✓ Robot node created successfully")
         
@@ -3436,61 +2400,76 @@ def main(args=None):
         print("✓ Multi-threaded executor configured (4 threads)")
         
         print("\n" + "=" * 60)
-        print(" ROBOT SYSTEMS READY!")
+        print("🤖 ROBOT SYSTEMS READY!")
         print("=" * 60)
         print("Enhanced Features Enabled:")
-        print("   Ultra-fast obstacle avoidance (1-3ms response)")
-        print("   Multi-sensor fusion (LIDAR + Ultrasonic + UWB)")
-        print("  易 Dynamic Window Approach path planning")
+        print("  ⚡ Ultra-fast obstacle avoidance (1-3ms response)")
+        print("  🔄 Multi-sensor fusion (LIDAR + Ultrasonic + UWB)")
+        print("  🛤️  Dynamic Window Approach path planning")
         print("  ⚡ Real-time priority scheduling")
-        print("   Independent wheel control system")
-        print("  ️ Multi-level emergency response")
-        print("   Performance monitoring & optimization")
-        print("   Dynamic object detection & tracking")
-        print("   Path alternatives (never just stop)")
-        print("   Smooth motion control & transitions")
+        print("  🎮 Mode switching (Manual/Automatic)")
+        print("  🔧 Independent wheel control system")
+        print("  🚨 Multi-level emergency response")
+        print("  📊 Performance monitoring & optimization")
+        print("  👁️  Dynamic object detection & tracking")
+        print("  🛣️  Path alternatives (never just stop)")
+        print("  🎯 Smooth motion control & transitions")
         
         print("\nSafety Systems:")
-        print("   Emergency brake (< 1ms response)")
-        print("   Critical zone monitoring (360°)")
-        print("  烙 Multi-sensor redundancy")
+        print("  🛑 Emergency brake (< 1ms response)")
+        print("  🔄 Critical zone monitoring (360°)")
+        print("  🔧 Multi-sensor redundancy")
         print("  ⚠️  Fail-safe fallback modes")
         
+        print("\nMode Switching Control:")
+        print("  🎮 Manual Mode: Joystick control active")
+        print("  🤖 Automatic Mode: AI navigation active")
+        print("  🔄 Switch: Press BACK button on joystick")
+        print("  📡 Status: Published on /robot_mode topic")
+        
         print("\nPerformance Targets:")
-        print("   Control frequency: 500Hz")
+        print("  🔄 Control frequency: 500Hz")
         print("  ⚡ Emergency response: < 1ms")
-        print("   Normal response: < 5ms")
-        print("   Sensor fusion: 800Hz")
+        print("  🎯 Normal response: < 5ms")
+        print("  📡 Sensor fusion: 800Hz")
         
         print("\n" + "=" * 60)
         print("Press Ctrl+C to stop the robot")
+        print("Current Mode: MANUAL (switch with joystick BACK button)")
         print("=" * 60)
         
         # Start performance logging
         def log_performance():
-            if hasattr(node, 'performance_monitor'):
+            if hasattr(node, 'performance_monitor') and node.performance_monitor:
                 if node.performance_monitor.should_log_performance():
                     summary = node.performance_monitor.get_performance_summary()
-                    print(f"\n {summary}\n")
+                    mode_status = f"Current Mode: {node.current_mode.upper()}"
+                    active_status = "ACTIVE" if node.mode_active else "STANDBY"
+                    print(f"\n📊 {summary}")
+                    print(f"🎮 {mode_status} ({active_status})\n")
         
         # Create performance logging timer
-        performance_timer = threading.Timer(5.0, log_performance)
-        performance_timer.daemon = True
-        performance_timer.start()
+        def start_performance_timer():
+            log_performance()
+            performance_timer = threading.Timer(5.0, start_performance_timer)
+            performance_timer.daemon = True
+            performance_timer.start()
+        
+        start_performance_timer()
         
         # Run the robot
-        print(" Starting robot operation...\n")
+        print("🚀 Starting robot operation...\n")
         executor.spin()
         
     except KeyboardInterrupt:
-        print("\n" + "" * 20)
-        print(" User interruption detected")
-        print(" Initiating safe shutdown...")
-        print("" * 20)
+        print("\n" + "🛑" * 20)
+        print("👤 User interruption detected")
+        print("🔄 Initiating safe shutdown...")
+        print("🛑" * 20)
         
     except Exception as e:
         print(f"\n❌ CRITICAL SYSTEM ERROR: {e}")
-        print(" Full error traceback:")
+        print("📋 Full error traceback:")
         import traceback
         traceback.print_exc()
         
@@ -3500,18 +2479,18 @@ def main(args=None):
         except:
             pass
             
-        print(" Attempting emergency shutdown...")
+        print("🚨 Attempting emergency shutdown...")
         
     finally:
         # Comprehensive cleanup
-        print("\n SYSTEM CLEANUP SEQUENCE")
+        print("\n🔧 SYSTEM CLEANUP SEQUENCE")
         print("-" * 40)
         
         cleanup_success = True
         
         if node:
             try:
-                print("Stopping robot node...")
+                print("🛑 Stopping robot node...")
                 node.stop()
                 node.destroy_node()
                 print("✓ Node destroyed successfully")
@@ -3521,7 +2500,7 @@ def main(args=None):
         
         if executor:
             try:
-                print("Shutting down executor...")
+                print("🔄 Shutting down executor...")
                 executor.shutdown(timeout_sec=2.0)
                 print("✓ Executor shutdown complete")
             except Exception as e:
@@ -3529,7 +2508,7 @@ def main(args=None):
                 cleanup_success = False
         
         try:
-            print("Shutting down ROS2...")
+            print("🔄 Shutting down ROS2...")
             rclpy.shutdown()
             print("✓ ROS2 shutdown complete")
         except Exception as e:
@@ -3538,7 +2517,7 @@ def main(args=None):
         
         # Final GPIO cleanup with comprehensive error handling
         try:
-            print("Cleaning up GPIO...")
+            print("🔧 Cleaning up GPIO...")
             
             # Turn off all indicator LEDs
             gpio_pin_17.off()
@@ -3558,7 +2537,7 @@ def main(args=None):
         # Final status
         print("-" * 40)
         if cleanup_success:
-            print(" ROBOT SHUTDOWN COMPLETE - ALL SYSTEMS CLEAN")
+            print("✅ ROBOT SHUTDOWN COMPLETE - ALL SYSTEMS CLEAN")
         else:
             print("⚠️  ROBOT SHUTDOWN COMPLETE - SOME ERRORS OCCURRED")
             print("   Check system logs for details")
@@ -3568,7 +2547,7 @@ def main(args=None):
 # Test mode for sensor verification
 def test_sensors_mode():
     """Test mode untuk verifikasi sensor"""
-    print(" SENSOR TEST MODE")
+    print("🔧 SENSOR TEST MODE")
     print("=" * 40)
     
     try:
@@ -3576,8 +2555,15 @@ def test_sensors_mode():
         print("Testing ultrasonic sensors...")
         ultrasonic_manager = UltrasonicSensorManager()
         
-        # Run test
-        ultrasonic_manager.test_sensor_directions()
+        # Run basic sensor test
+        for i in range(10):
+            status = ultrasonic_manager.get_sensor_status()
+            print(f"Test {i+1}/10:")
+            for sensor_name, data in status.items():
+                distance = data.get('distance', -1)
+                level = data.get('level', 'unknown')
+                print(f"  {sensor_name}: {distance:.1f}cm ({level})")
+            time.sleep(1)
         
         # Cleanup
         ultrasonic_manager.stop()
